@@ -11,9 +11,9 @@ I have not even made a Makefile for this because I am super lazy.
 
 Compilation on Mac:
 
-gcc main.c -o spiffify -L. -lspotify
+gcc main.c -o spiffify -framework libspotify
 
-If you have libspotift.framework in a non-standard location like I do:
+If you have libspotify.framework in a non-standard location like I do:
 
 install_name_tool -change @loader_path/../Frameworks/libspotify.framework/libspotify ~/Downloads/libspotify-12.1.51-Darwin-universal/libspotify.framework/libspotify spiffify
 
