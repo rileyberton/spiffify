@@ -120,16 +120,33 @@ static void connection_error(sp_session *session, sp_error error) {
 	fprintf(stderr, "connection_error %s", sp_error_message(error));
 }
 
-static sp_playlist *find_album_playlist(sp_playlistcontainer *list_container, int spiffify_start_index, int spiffify_end_index, sp_album *al) 
+static sp_playlist *find_album_playlist(sp_playlistcontainer *list_container, int *spiffify_start_index, int spiffify_end_index, sp_album *al) 
 {
 	if (al == NULL) {
 		return NULL;
 	}
-	int j=spiffify_start_index;
+	int j=*spiffify_start_index;
+	sp_artist *a = sp_album_artist(al);
+	const char *artist = sp_artist_name(a);
+	int artist_end = 0;
+	sp_uint64 artist_folder_id = 0;
 	for(; j < spiffify_end_index; j++) {
 		sp_playlist *p = sp_playlistcontainer_playlist(list_container, j);
 		if (p == NULL) {
 			continue;
+		}
+		sp_playlist_type type = sp_playlistcontainer_playlist_type(list_container,j);
+		if (type == SP_PLAYLIST_TYPE_START_FOLDER) {
+			char folder_name[256];
+			sp_error error = sp_playlistcontainer_playlist_folder_name(list_container, j, folder_name, 255);
+			if (strcmp(folder_name, artist) == 0) {
+				artist_folder_id = sp_playlistcontainer_playlist_folder_id(list_container, j);
+			}
+		}
+		else if (type == SP_PLAYLIST_TYPE_END_FOLDER) {
+			if (artist_folder_id == sp_playlistcontainer_playlist_folder_id(list_container, j)) {
+				artist_end = j;
+			}
 		}
 		const char *plname = sp_playlist_name(p);
 		if (plname != NULL) {
@@ -138,6 +155,10 @@ static sp_playlist *find_album_playlist(sp_playlistcontainer *list_container, in
 				return p;
 			}
 		}
+	}
+	// in the case where we don't yet have the playlist for this album and we are about to create it, send back the end of this artist folder
+	if (artist_end != 0) {
+		*spiffify_start_index = artist_end-1;
 	}
 	return NULL;
 }
@@ -187,6 +208,40 @@ static bool validate_complete_load()
 		}
 	}
 	return true;
+}
+
+int compare_tracks(const void* a, const void* b) {
+	// type safety??! this is C god dammit!
+	sp_track *left = *((sp_track**)a);
+	sp_track *right = *((sp_track**)b);
+
+	sp_artist *lefta = sp_track_artist(left,0); // get first artist on track because I am lazy
+	sp_album *leftal = sp_track_album(left);
+
+	sp_artist *righta = sp_track_artist(right, 0);
+	sp_album *rightal = sp_track_album(right);
+
+	const char *left_artist = sp_artist_name(lefta);
+	const char *right_artist = sp_artist_name(righta);
+	
+	int artist_compare = strcmp(left_artist, right_artist);
+	if (artist_compare != 0) {
+		return artist_compare;
+	}
+	
+	const char *left_album = sp_album_name(leftal);
+	const char *right_album = sp_album_name(rightal);
+
+	int album_compare = strcmp(left_album, right_album);
+	if (album_compare != 0) {
+		return album_compare;
+	}
+
+	// for the last tier we use track number, not name.
+	int left_track = sp_track_index(left);
+	int right_track = sp_track_index(right);
+	return left < right ? -1 : left > right ? 1 : 0;
+
 }
 
 static bool spiffify() {
@@ -263,11 +318,21 @@ static bool spiffify() {
 	}
 	
 	// iterate the source playlist
-	// todo: store these in a list and sort it by track order.
 	int nt = sp_playlist_num_tracks(source_list);
+
+	// allocate storage for tracks
+	sp_track **tracks = (sp_track **) malloc(nt * sizeof(sp_track *));
 	i=0;
 	for(; i < nt; i++) {
 		sp_track *t = sp_playlist_track(source_list, i);
+		tracks[i] = t; // store in the array
+	}
+	// :)
+	mergesort(tracks, nt, sizeof(sp_track *), &compare_tracks);
+
+	i=0;
+	for(; i < nt; i++) {
+		sp_track *t = tracks[i]; //sp_playlist_track(source_list, i);
 		sp_artist *a = sp_track_artist(t,0); // get first artist on track because I am lazy
 		// find artist folder inside our spiffify list
 		bool haveartist = false;
@@ -305,7 +370,7 @@ static bool spiffify() {
 		}
 		else {
 			int artist_pos = j;
-			sp_playlist *albumpl = find_album_playlist(list_container, artist_pos, spiffify_end_index, al);
+			sp_playlist *albumpl = find_album_playlist(list_container, &artist_pos, spiffify_end_index, al);
 			if (albumpl == NULL) {
 				pl_count = sp_playlistcontainer_num_playlists(list_container);
 				albumpl = sp_playlistcontainer_add_new_playlist(list_container, sp_album_name(al));
@@ -315,6 +380,7 @@ static bool spiffify() {
 			sp_playlist_add_tracks(albumpl, &t, 1, 0, session);
 		}
 	}
+	free(tracks);
 	return true;
 }
 
